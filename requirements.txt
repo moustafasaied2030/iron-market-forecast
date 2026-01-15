@@ -5,3 +5,5 @@ webdriver-manager
 prophet
 matplotlib
 lxml
+html5lib
+beautifulsoup4
