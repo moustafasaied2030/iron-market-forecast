@@ -19,7 +19,7 @@ DATA_FILE = "iron_16mm_data.csv"
 # 2. دالة تنظيف البيانات
 def clean_data(df_raw):
     try:
-        # التعامل بذكاء مع البيانات سواء كانت بالعرض (من المصدر) أو بالطول (بعد التعديل اليدوي)
+        # التعامل بذكاء مع البيانات
         if 'ds' in df_raw.columns and 'y' in df_raw.columns:
             df = df_raw.copy()
         else:
@@ -67,24 +67,23 @@ def scrape_data():
         driver.quit()
         
         if dfs:
-            # نحفظ البيانات الخام بشكل يسمح بدمجها لاحقاً
             df_new = dfs[0].transpose().reset_index()
             df_new.columns = ['ds', 'y']
             df_new.to_csv(DATA_FILE, index=False, encoding='utf-8-sig')
             return True
     except Exception as e:
-        st.sidebar.error(f"خطأ اتصال: {e}")
+        st.sidebar.error(f"Error: {e}")
     return False
 
-# --- القائمة الجانبية (كل الأدوات هنا) ---
+# --- القائمة الجانبية ---
 st.sidebar.header("🎛️ لوحة التحكم")
 
-# أداة 1: مدة التوقع (التي كان فيها الخطأ)
+# أداة 1: مدة التوقع (تم إصلاح الخطأ هنا)
 forecast_days = st.sidebar.slider("مدة الرسم البياني (أيام):", 30, 730, 365, 30)
 
 st.sidebar.markdown("---")
 
-# أداة 2: البحث عن تاريخ (تمت إعادتها ✅)
+# أداة 2: البحث عن تاريخ
 st.sidebar.subheader("📅 استعلام عن تاريخ")
 target_date_input = st.sidebar.date_input("اختر اليوم:", datetime.now())
 
@@ -92,20 +91,18 @@ st.sidebar.markdown("---")
 
 # أداة 3: تصحيح السعر اليدوي
 st.sidebar.subheader("🛠️ تصحيح سعر السوق")
-st.sidebar.caption("استخدم هذا الزر لضبط السعر إذا كانت البيانات الرسمية قديمة.")
+st.sidebar.caption("اضبط السعر يدوياً لتحديث النموذج:")
 new_price = st.sidebar.number_input("سعر اليوم الفعلي:", value=36000, step=500)
 
 if st.sidebar.button("تسجيل السعر وتحديث 💾"):
     if os.path.exists(DATA_FILE):
         current_df = pd.read_csv(DATA_FILE)
-        # توحيد التنسيق قبل الدمج
         if 'ds' not in current_df.columns:
             current_df = clean_data(pd.read_csv(DATA_FILE))
             
         today_date = datetime.now().strftime('%Y-%m-%d')
         new_row = pd.DataFrame({'ds': [today_date], 'y': [new_price]})
         
-        # دمج وحفظ
         updated_df = pd.concat([current_df, new_row], ignore_index=True)
         updated_df.to_csv(DATA_FILE, index=False, encoding='utf-8-sig')
         st.sidebar.success("تم الحفظ!")
@@ -124,7 +121,6 @@ if os.path.exists(DATA_FILE):
     df_clean = clean_data(raw_data)
     
     if df_clean is not None and not df_clean.empty:
-        # تدريب النموذج
         m = Prophet(daily_seasonality=True)
         m.fit(df_clean)
         
@@ -139,12 +135,35 @@ if os.path.exists(DATA_FILE):
         
         col1, col2 = st.columns(2)
         with col1:
-            # إذا كان التاريخ في الماضي أو اليوم
             if target_date <= last_real_date:
-                # نبحث عن أقرب تاريخ مسجل
                 df_clean['ds'] = pd.to_datetime(df_clean['ds'])
                 nearest_idx = (df_clean['ds'] - target_date).abs().idxmin()
                 real_row = df_clean.loc[nearest_idx]
                 
+                # (تم إصلاح الخطأ هنا أيضاً)
                 st.metric("السعر المسجل (تاريخي)", f"{real_row['y']:,.0f} جنيه")
-                st.caption(f"أقرب بيان متوفر: {real_row['ds'].strftime('%
+                formatted_date = real_row['ds'].strftime('%Y-%m-%d')
+                st.caption(f"أقرب بيان متوفر: {formatted_date}")
+            
+            else:
+                pred_row = forecast[forecast['ds'] == target_date]
+                if not pred_row.empty:
+                    p = pred_row.iloc[0]
+                    st.metric("السعر المتوقع", f"{p['yhat']:,.0f} جنيه")
+                    st.caption(f"المدى المتوقع: {p['yhat_lower']:,.0f} - {p['yhat_upper']:,.0f}")
+                else:
+                    st.warning("التاريخ خارج النطاق. قم بزيادة المدة.")
+
+        st.divider()
+        st.subheader("📈 مسار الأسعار")
+        fig = m.plot(forecast)
+        st.pyplot(fig)
+        
+        csv = forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].to_csv(index=False).encode('utf-8')
+        st.download_button("تحميل التوقعات CSV", csv, "forecast.csv", "text/csv")
+        
+    else:
+        st.error("البيانات تالفة.")
+else:
+    st.warning("⚠️ لم يتم العثور على ملف البيانات (iron_16mm_data.csv).")
+    st.info("قم برفع الملف إلى GitHub أو اضغط زر التحديث.")
