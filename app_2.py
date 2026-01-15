@@ -9,45 +9,42 @@ from prophet import Prophet
 import matplotlib.pyplot as plt
 import os
 
-# إعدادات الصفحة
-st.set_page_config(page_title="Debug Mode", layout="wide")
-st.title("🛠️ وضع إصلاح الأخطاء (Debug Mode)")
+# 1. إعدادات الصفحة
+st.set_page_config(page_title="توقعات الحديد 16مم", layout="wide")
+st.title("🏗️ لوحة تحليل وتوقع أسعار الحديد (16مم)")
 
 DATA_FILE = "iron_16mm_data.csv"
 
-# دالة تنظيف البيانات (مع إظهار الأخطاء)
+# 2. دالة تنظيف وتجهيز البيانات
 def clean_data(df_raw):
     try:
-        st.write("... جاري تنظيف البيانات ...")
+        # تحويل البيانات من عرضي لطولي
         df = df_raw.transpose().reset_index()
         df.columns = ['ds', 'y']
         
-        # طباعة شكل البيانات قبل التنظيف للتأكد
-        st.write("شكل البيانات قبل المعالجة:")
-        st.write(df.head())
-
+        # قاموس الشهور العربية
         months = {'يناير': 'Jan', 'فبراير': 'Feb', 'مارس': 'Mar', 'أبريل': 'Apr', 'ابريل': 'Apr',
-                  'مايو': 'May', 'يونيو': 'Jun', 'يوليو': 'Jul', 'أغسطس': 'Aug', 'سبتمبر': 'Sep',
-                  'أكتوبر': 'Oct', 'نوفمبر': 'Nov', 'ديسمبر': 'Dec'}
+                  'مايو': 'May', 'يونيو': 'Jun', 'يوليو': 'Jul', 'أغسطس': 'Aug', 'اغسطس': 'Aug',
+                  'سبتمبر': 'Sep', 'أكتوبر': 'Oct', 'اكتوبر': 'Oct', 'نوفمبر': 'Nov', 'ديسمبر': 'Dec'}
         
+        # استبدال الشهور العربية
         for ar, en in months.items():
             df['ds'] = df['ds'].astype(str).str.replace(ar, en, regex=False)
         
+        # تحويل التواريخ (مع تجاهل الأخطاء مثل كلمة Indicator)
         df['ds'] = pd.to_datetime(df['ds'], errors='coerce')
-        df['y'] = pd.to_numeric(df['y'].astype(str).str.replace(r'[^\d.]', '', regex=True), errors='coerce')
         
-        result = df.dropna().sort_values('ds')
+        # تنظيف عمود السعر (إزالة أي نصوص والإبقاء على الأرقام فقط)
+        df['y'] = df['y'].astype(str).str.replace(r'[^\d.]', '', regex=True)
+        df['y'] = pd.to_numeric(df['y'], errors='coerce')
         
-        if result.empty:
-            st.error("البيانات فارغة بعد التنظيف! تأكد أن التواريخ والأرقام في الملف الأصلي صحيحة.")
-            return None
-            
-        return result
+        # حذف الصفوف الفارغة أو غير الصالحة
+        return df.dropna().sort_values('ds')
     except Exception as e:
-        st.error(f"حدث خطأ داخل دالة التنظيف: {e}")
+        st.error(f"خطأ أثناء معالجة البيانات: {e}")
         return None
 
-# دالة السحب (Scraping) المعدلة للسيرفر
+# 3. دالة السحب (Robust Version for Streamlit Cloud)
 def scrape_data():
     options = Options()
     options.add_argument("--headless")
@@ -57,71 +54,99 @@ def scrape_data():
     
     try:
         service = None
+        # التحقق الذكي: هل نحن على سيرفر لينكس (Streamlit Cloud)؟
+        if os.path.exists("/usr/bin/chromium"):
+            options.binary_location = "/usr/bin/chromium"
+        
+        # تحديد مكان الـ Driver
         if os.path.exists("/usr/bin/chromedriver"):
             service = Service("/usr/bin/chromedriver")
         else:
             service = Service(ChromeDriverManager().install())
 
         driver = webdriver.Chrome(service=service, options=options)
+        
+        # الرابط
         driver.get("https://www.capmas.gov.eg/data/mainSubject/1/subSubject/13/data-visualization/4274")
         
-        import time; time.sleep(15)
+        # انتظار التحميل
+        import time
+        time.sleep(15) 
+        
         dfs = pd.read_html(driver.page_source)
         driver.quit()
         
         if dfs:
+            # حفظ الملف الجديد
             dfs[0].to_csv(DATA_FILE, index=False, encoding='utf-8-sig')
             return True
+            
     except Exception as e:
-        st.error(f"فشل السحب: {e}")
+        st.sidebar.error(f"حدث خطأ في الاتصال بالمصدر: {e}")
     return False
 
-# --- الكود الرئيسي ---
+# --- 4. القائمة الجانبية (Sidebar) ---
+st.sidebar.header("لوحة التحكم")
 
-# 1. فحص وجود الملف
-if os.path.exists(DATA_FILE):
-    st.success(f"1. تم العثور على الملف: {DATA_FILE}")
-    
-    try:
-        raw_data = pd.read_csv(DATA_FILE)
-        st.write("2. تم قراءة الملف بنجاح. عدد الصفوف:", len(raw_data))
-        
-        # عرض محتوى الملف الخام (للتأكد أنه ليس فارغاً)
-        with st.expander("عرض الملف الأصلي"):
-            st.dataframe(raw_data)
-        
-        # محاولة التنظيف
-        df_final = clean_data(raw_data)
-        
-        if df_final is not None:
-            st.success(f"3. نجح التنظيف. عدد الصفوف الصالحة: {len(df_final)}")
-            
-            # تشغيل Prophet
-            with st.spinner("جاري تدريب النموذج..."):
-                m = Prophet(daily_seasonality=True)
-                m.fit(df_final)
-                future = m.make_future_dataframe(periods=365)
-                forecast = m.predict(future)
-            
-            st.subheader("الرسم البياني للتوقعات")
-            fig = m.plot(forecast)
-            st.pyplot(fig)
-        else:
-            st.error("توقف البرنامج لأن البيانات غير صالحة.")
-            
-    except Exception as e:
-        st.error(f"حدث خطأ غير متوقع: {e}")
+# >> الميزة الجديدة: التحكم في مدة التوقع <<
+forecast_days = st.sidebar.slider(
+    "حدد مدة التوقع (بالأيام):", 
+    min_value=30, 
+    max_value=730, 
+    value=365, 
+    step=30
+)
 
-else:
-    st.warning("⚠️ لم يتم العثور على ملف البيانات (iron_16mm_data.csv).")
-    st.info("من فضلك اضغط على زر التحديث في القائمة الجانبية لمحاولة جلبه.")
+st.sidebar.markdown("---")
 
-# القائمة الجانبية
-st.sidebar.header("التحكم")
-if st.sidebar.button("تحديث البيانات 🔄"):
-    with st.sidebar.status("جاري الاتصال بالموقع..."):
+# زر التحديث
+if st.sidebar.button("تحديث البيانات من المصدر 🔄"):
+    with st.sidebar.status("جاري سحب البيانات الجديدة..."):
         if scrape_data():
-            st.sidebar.success("تم التحديث!")
+            st.sidebar.success("تم تحديث الأسعار بنجاح!")
             st.rerun()
         else:
-            st.sidebar.error("فشل التحديث.")
+            st.sidebar.error("فشل التحديث. حاول مرة أخرى.")
+
+# --- 5. التشغيل الرئيسي ---
+if os.path.exists(DATA_FILE):
+    # قراءة الملف
+    raw_data = pd.read_csv(DATA_FILE)
+    df_clean = clean_data(raw_data)
+    
+    if df_clean is not None and not df_clean.empty:
+        # تدريب النموذج
+        m = Prophet(daily_seasonality=True)
+        m.fit(df_clean)
+        
+        # استخدام المدة التي اختارها المستخدم
+        future = m.make_future_dataframe(periods=forecast_days)
+        forecast = m.predict(future)
+        
+        # الرسم البياني
+        st.subheader(f"📈 رسم بياني لتوقعات الـ {forecast_days} يوم القادمة")
+        fig1 = m.plot(forecast)
+        st.pyplot(fig1)
+        
+        # تحليل المكونات (الاتجاه العام)
+        with st.expander("عرض تفاصيل الاتجاه العام (Trend)"):
+            fig2 = m.plot_components(forecast)
+            st.pyplot(fig2)
+        
+        # عرض آخر أسعار مسجلة
+        st.markdown("### 📋 آخر الأسعار المسجلة فعلياً")
+        st.dataframe(df_clean.tail(10).style.format({"y": "{:.2f}"}))
+        
+        # زر تحميل التوقعات
+        csv_exp = forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="تحميل ملف التوقعات (CSV)",
+            data=csv_exp,
+            file_name='forecast_iron_16mm.csv',
+            mime='text/csv',
+        )
+    else:
+        st.error("البيانات الموجودة في الملف غير صالحة. برجاء الضغط على 'تحديث البيانات'.")
+else:
+    st.warning("⚠️ لم يتم العثور على ملف بيانات.")
+    st.info("اضغط على زر 'تحديث البيانات من المصدر' في القائمة الجانبية لبدء العمل.")
