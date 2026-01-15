@@ -8,6 +8,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 from prophet import Prophet
 import matplotlib.pyplot as plt
 import os
+from datetime import datetime, timedelta
 
 # 1. إعدادات الصفحة
 st.set_page_config(page_title="توقعات الحديد 16مم", layout="wide")
@@ -15,36 +16,29 @@ st.title("🏗️ لوحة تحليل وتوقع أسعار الحديد (16مم
 
 DATA_FILE = "iron_16mm_data.csv"
 
-# 2. دالة تنظيف وتجهيز البيانات
+# 2. دالة تنظيف البيانات
 def clean_data(df_raw):
     try:
-        # تحويل البيانات من عرضي لطولي
         df = df_raw.transpose().reset_index()
         df.columns = ['ds', 'y']
         
-        # قاموس الشهور العربية
         months = {'يناير': 'Jan', 'فبراير': 'Feb', 'مارس': 'Mar', 'أبريل': 'Apr', 'ابريل': 'Apr',
                   'مايو': 'May', 'يونيو': 'Jun', 'يوليو': 'Jul', 'أغسطس': 'Aug', 'اغسطس': 'Aug',
                   'سبتمبر': 'Sep', 'أكتوبر': 'Oct', 'اكتوبر': 'Oct', 'نوفمبر': 'Nov', 'ديسمبر': 'Dec'}
         
-        # استبدال الشهور العربية
         for ar, en in months.items():
             df['ds'] = df['ds'].astype(str).str.replace(ar, en, regex=False)
         
-        # تحويل التواريخ (مع تجاهل الأخطاء مثل كلمة Indicator)
         df['ds'] = pd.to_datetime(df['ds'], errors='coerce')
-        
-        # تنظيف عمود السعر (إزالة أي نصوص والإبقاء على الأرقام فقط)
         df['y'] = df['y'].astype(str).str.replace(r'[^\d.]', '', regex=True)
         df['y'] = pd.to_numeric(df['y'], errors='coerce')
         
-        # حذف الصفوف الفارغة أو غير الصالحة
         return df.dropna().sort_values('ds')
     except Exception as e:
-        st.error(f"خطأ أثناء معالجة البيانات: {e}")
+        st.error(f"خطأ معالجة: {e}")
         return None
 
-# 3. دالة السحب (Robust Version for Streamlit Cloud)
+# 3. دالة السحب
 def scrape_data():
     options = Options()
     options.add_argument("--headless")
@@ -54,22 +48,17 @@ def scrape_data():
     
     try:
         service = None
-        # التحقق الذكي: هل نحن على سيرفر لينكس (Streamlit Cloud)؟
         if os.path.exists("/usr/bin/chromium"):
             options.binary_location = "/usr/bin/chromium"
         
-        # تحديد مكان الـ Driver
         if os.path.exists("/usr/bin/chromedriver"):
             service = Service("/usr/bin/chromedriver")
         else:
             service = Service(ChromeDriverManager().install())
 
         driver = webdriver.Chrome(service=service, options=options)
-        
-        # الرابط
         driver.get("https://www.capmas.gov.eg/data/mainSubject/1/subSubject/13/data-visualization/4274")
         
-        # انتظار التحميل
         import time
         time.sleep(15) 
         
@@ -77,76 +66,96 @@ def scrape_data():
         driver.quit()
         
         if dfs:
-            # حفظ الملف الجديد
             dfs[0].to_csv(DATA_FILE, index=False, encoding='utf-8-sig')
             return True
-            
     except Exception as e:
-        st.sidebar.error(f"حدث خطأ في الاتصال بالمصدر: {e}")
+        st.sidebar.error(f"خطأ اتصال: {e}")
     return False
 
-# --- 4. القائمة الجانبية (Sidebar) ---
+# --- القائمة الجانبية ---
 st.sidebar.header("لوحة التحكم")
 
-# >> الميزة الجديدة: التحكم في مدة التوقع <<
-forecast_days = st.sidebar.slider(
-    "حدد مدة التوقع (بالأيام):", 
-    min_value=30, 
-    max_value=730, 
-    value=365, 
-    step=30
-)
+# أداة 1: تحديد مدة الرسم البياني
+forecast_days = st.sidebar.slider("مدة الرسم البياني (أيام):", 30, 730, 365, 30)
 
 st.sidebar.markdown("---")
 
-# زر التحديث
-if st.sidebar.button("تحديث البيانات من المصدر 🔄"):
-    with st.sidebar.status("جاري سحب البيانات الجديدة..."):
-        if scrape_data():
-            st.sidebar.success("تم تحديث الأسعار بنجاح!")
-            st.rerun()
-        else:
-            st.sidebar.error("فشل التحديث. حاول مرة أخرى.")
+# أداة 2: البحث عن سعر في تاريخ محدد (جديد!) 📅
+st.sidebar.subheader("🔍 استعلام عن تاريخ محدد")
+target_date_input = st.sidebar.date_input("اختر التاريخ:", datetime.now())
 
-# --- 5. التشغيل الرئيسي ---
+st.sidebar.markdown("---")
+
+if st.sidebar.button("تحديث البيانات 🔄"):
+    with st.sidebar.status("جاري التحديث..."):
+        if scrape_data():
+            st.sidebar.success("تم!")
+            st.rerun()
+
+# --- المحتوى الرئيسي ---
 if os.path.exists(DATA_FILE):
-    # قراءة الملف
     raw_data = pd.read_csv(DATA_FILE)
     df_clean = clean_data(raw_data)
     
     if df_clean is not None and not df_clean.empty:
-        # تدريب النموذج
+        # تجهيز النموذج
         m = Prophet(daily_seasonality=True)
         m.fit(df_clean)
         
-        # استخدام المدة التي اختارها المستخدم
+        # إنشاء نطاق زمني للمستقبل (بناءً على اختيار المستخدم في الـ Slider)
         future = m.make_future_dataframe(periods=forecast_days)
         forecast = m.predict(future)
         
-        # الرسم البياني
-        st.subheader(f"📈 رسم بياني لتوقعات الـ {forecast_days} يوم القادمة")
+        # --- منطق البحث عن التاريخ المحدد ---
+        # نحول التاريخ المختار لصيغة datetime للمقارنة
+        target_date = pd.to_datetime(target_date_input)
+        last_real_date = df_clean['ds'].max()
+        
+        # عرض نتيجة البحث في مربع بارز في الأعلى
+        st.info(f"📅 التاريخ المختار: {target_date.strftime('%Y-%m-%d')}")
+        
+        col_res1, col_res2 = st.columns(2)
+        
+        with col_res1:
+            if target_date <= last_real_date:
+                # 1. حالة الماضي: البحث في البيانات الحقيقية
+                # نبحث عن أقرب تاريخ مسجل (لأن البيانات قد تكون شهرية وليست يومية)
+                nearest_date = df_clean.iloc[(df_clean['ds'] - target_date).abs().argsort()[:1]]
+                real_price = nearest_date['y'].values[0]
+                real_date_found = nearest_date['ds'].dt.strftime('%Y-%m-%d').values[0]
+                
+                st.metric(label="السعر المسجل (تاريخي)", value=f"{real_price:,.0f} جنيه")
+                st.caption(f"* أقرب سجل متوفر كان بتاريخ: {real_date_found}")
+            else:
+                # 2. حالة المستقبل: استخدام التوقعات
+                # نتأكد أن التاريخ المستقبلي موجود ضمن نطاق التوقع
+                days_diff = (target_date - last_real_date).days
+                if days_diff > forecast_days:
+                    st.warning(f"⚠️ هذا التاريخ بعيد جداً! يرجى زيادة 'مدة الرسم البياني' من الشريط الجانبي إلى أكثر من {days_diff} يوم.")
+                else:
+                    # استخراج التوقع لهذا اليوم
+                    pred_row = forecast[forecast['ds'] == target_date]
+                    if not pred_row.empty:
+                        pred_price = pred_row['yhat'].values[0]
+                        lower_price = pred_row['yhat_lower'].values[0]
+                        upper_price = pred_row['yhat_upper'].values[0]
+                        
+                        st.metric(label="السعر المتوقع", value=f"{pred_price:,.0f} جنيه")
+                        st.write(f"تتراوح التوقعات بين: **{lower_price:,.0f}** و **{upper_price:,.0f}** جنيه")
+                    else:
+                        st.warning("يرجى توسيع نطاق التوقع ليشمل هذا التاريخ.")
+
+        # --- الرسم البياني العام ---
+        st.divider()
+        st.subheader("📈 الرسم البياني للأسعار")
         fig1 = m.plot(forecast)
         st.pyplot(fig1)
         
-        # تحليل المكونات (الاتجاه العام)
-        with st.expander("عرض تفاصيل الاتجاه العام (Trend)"):
-            fig2 = m.plot_components(forecast)
-            st.pyplot(fig2)
+        # تحميل البيانات
+        csv = forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].to_csv(index=False).encode('utf-8')
+        st.download_button("تحميل التوقعات CSV", csv, "forecast.csv", "text/csv")
         
-        # عرض آخر أسعار مسجلة
-        st.markdown("### 📋 آخر الأسعار المسجلة فعلياً")
-        st.dataframe(df_clean.tail(10).style.format({"y": "{:.2f}"}))
-        
-        # زر تحميل التوقعات
-        csv_exp = forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="تحميل ملف التوقعات (CSV)",
-            data=csv_exp,
-            file_name='forecast_iron_16mm.csv',
-            mime='text/csv',
-        )
     else:
-        st.error("البيانات الموجودة في الملف غير صالحة. برجاء الضغط على 'تحديث البيانات'.")
+        st.error("البيانات تالفة.")
 else:
-    st.warning("⚠️ لم يتم العثور على ملف بيانات.")
-    st.info("اضغط على زر 'تحديث البيانات من المصدر' في القائمة الجانبية لبدء العمل.")
+    st.warning("لا يوجد ملف بيانات. اضغط تحديث.")
