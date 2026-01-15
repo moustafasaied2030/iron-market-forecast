@@ -79,5 +79,72 @@ def scrape_data():
 # --- القائمة الجانبية (كل الأدوات هنا) ---
 st.sidebar.header("🎛️ لوحة التحكم")
 
-# أداة 1: مدة التوقع
-forecast_days = st.sidebar.slider("مدة الرسم البياني (أ
+# أداة 1: مدة التوقع (التي كان فيها الخطأ)
+forecast_days = st.sidebar.slider("مدة الرسم البياني (أيام):", 30, 730, 365, 30)
+
+st.sidebar.markdown("---")
+
+# أداة 2: البحث عن تاريخ (تمت إعادتها ✅)
+st.sidebar.subheader("📅 استعلام عن تاريخ")
+target_date_input = st.sidebar.date_input("اختر اليوم:", datetime.now())
+
+st.sidebar.markdown("---")
+
+# أداة 3: تصحيح السعر اليدوي
+st.sidebar.subheader("🛠️ تصحيح سعر السوق")
+st.sidebar.caption("استخدم هذا الزر لضبط السعر إذا كانت البيانات الرسمية قديمة.")
+new_price = st.sidebar.number_input("سعر اليوم الفعلي:", value=36000, step=500)
+
+if st.sidebar.button("تسجيل السعر وتحديث 💾"):
+    if os.path.exists(DATA_FILE):
+        current_df = pd.read_csv(DATA_FILE)
+        # توحيد التنسيق قبل الدمج
+        if 'ds' not in current_df.columns:
+            current_df = clean_data(pd.read_csv(DATA_FILE))
+            
+        today_date = datetime.now().strftime('%Y-%m-%d')
+        new_row = pd.DataFrame({'ds': [today_date], 'y': [new_price]})
+        
+        # دمج وحفظ
+        updated_df = pd.concat([current_df, new_row], ignore_index=True)
+        updated_df.to_csv(DATA_FILE, index=False, encoding='utf-8-sig')
+        st.sidebar.success("تم الحفظ!")
+        st.rerun()
+
+st.sidebar.markdown("---")
+if st.sidebar.button("سحب بيانات المصدر 🔄"):
+    with st.sidebar.status("جاري السحب..."):
+        if scrape_data():
+            st.sidebar.success("تم!")
+            st.rerun()
+
+# --- المحتوى الرئيسي ---
+if os.path.exists(DATA_FILE):
+    raw_data = pd.read_csv(DATA_FILE)
+    df_clean = clean_data(raw_data)
+    
+    if df_clean is not None and not df_clean.empty:
+        # تدريب النموذج
+        m = Prophet(daily_seasonality=True)
+        m.fit(df_clean)
+        
+        future = m.make_future_dataframe(periods=forecast_days)
+        forecast = m.predict(future)
+        
+        # --- منطق عرض التاريخ المحدد ---
+        target_date = pd.to_datetime(target_date_input)
+        last_real_date = pd.to_datetime(df_clean['ds']).max()
+        
+        st.info(f"📍 نتيجة البحث عن يوم: {target_date.strftime('%Y-%m-%d')}")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            # إذا كان التاريخ في الماضي أو اليوم
+            if target_date <= last_real_date:
+                # نبحث عن أقرب تاريخ مسجل
+                df_clean['ds'] = pd.to_datetime(df_clean['ds'])
+                nearest_idx = (df_clean['ds'] - target_date).abs().idxmin()
+                real_row = df_clean.loc[nearest_idx]
+                
+                st.metric("السعر المسجل (تاريخي)", f"{real_row['y']:,.0f} جنيه")
+                st.caption(f"أقرب بيان متوفر: {real_row['ds'].strftime('%
